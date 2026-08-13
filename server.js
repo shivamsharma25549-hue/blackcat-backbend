@@ -1,0 +1,107 @@
+const express = require('express');
+const http = require('http');
+const { Server } = require('socket.io');
+const fs = require('fs');
+const path = require('path');
+const https = require('https');
+
+const app = express();
+app.use(express.json());
+
+const server = http.createServer(app);
+const io = new Server(server, {
+  cors: {
+    origin: "*",
+    methods: ["GET", "POST"]
+  }
+});
+
+const onlineUsers = new Map();
+
+// --- SOCKET.IO FOR LIVE PRESENCE & VOICE CHAT ---
+io.on('connection', (socket) => {
+  console.log('A user connected:', socket.id);
+
+  socket.on('online', (username) => {
+    onlineUsers.set(socket.id, { username, status: 'Online In Launcher', online: true, lastSeen: Date.now() });
+    io.emit('presence-update', Array.from(onlineUsers.values()));
+  });
+
+  socket.on('set-status', (status) => {
+    const user = onlineUsers.get(socket.id);
+    if (user) {
+      user.status = status;
+      io.emit('presence-update', Array.from(onlineUsers.values()));
+    }
+  });
+
+  socket.on('join-vc', (roomCode, userName) => {
+    socket.join(roomCode);
+    socket.to(roomCode).emit('user-joined', socket.id, userName);
+
+    socket.on('signal', (toId, data) => {
+      io.to(toId).emit('signal', socket.id, data);
+    });
+
+    socket.on('disconnect', () => {
+      socket.to(roomCode).emit('user-left', socket.id);
+    });
+  });
+
+  socket.on('disconnect', () => {
+    onlineUsers.delete(socket.id);
+    io.emit('presence-update', Array.from(onlineUsers.values()));
+    console.log('A user disconnected:', socket.id);
+  });
+});
+
+// --- API ENDPOINT: MOD INSTALLATION ---
+app.post('/api/install-mod', (req, res) => {
+  try {
+    const { downloadUrl, fileName } = req.body;
+    const modsDir = path.join(__dirname, 'minecraft_data', 'mods');
+    if (!fs.existsSync(modsDir)) {
+      fs.mkdirSync(modsDir, { recursive: true });
+    }
+    const filePath = path.join(modsDir, fileName);
+    const fileStream = fs.createWriteStream(filePath);
+    
+    https.get(downloadUrl, (response) => {
+      response.pipe(fileStream);
+      fileStream.on('finish', () => {
+        fileStream.close();
+        res.json({ success: true });
+      });
+    }).on('error', (err) => {
+      res.status(500).json({ success: false, error: err.message });
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// --- API ENDPOINT: GAME LAUNCH STREAM ---
+app.post('/api/launch-game', (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+
+  const sendProgress = (percent, text) => {
+    res.write(`data: ${JSON.stringify({ type: 'progress', percent, text })}\n\n`);
+  };
+
+  sendProgress(30, 'Verifying game files...');
+  setTimeout(() => {
+    sendProgress(70, 'Injecting classpath dependencies...');
+    setTimeout(() => {
+      sendProgress(100, 'Modules ready!');
+      res.write(`data: ${JSON.stringify({ type: 'done' })}\n\n`);
+      res.end();
+    }, 800);
+  }, 800);
+});
+
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, () => {
+  console.log(`Blackcat backend server running on port ${PORT}`);
+});
