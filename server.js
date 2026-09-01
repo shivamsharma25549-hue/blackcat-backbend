@@ -17,14 +17,21 @@ const io = new Server(server, {
 });
 
 const onlineUsers = new Map();
+const globalProfiles = new Map(); // Stores username -> { username, uid, socketId }
 
-// --- SOCKET.IO FOR LIVE PRESENCE & VOICE CHAT ---
+// --- SOCKET.IO FOR LIVE PRESENCE, UID SEARCH, DMS & VOICE CHAT ---
 io.on('connection', (socket) => {
   console.log('A user connected:', socket.id);
 
   socket.on('online', (username) => {
     onlineUsers.set(socket.id, { username, status: 'Online In Launcher', online: true, lastSeen: Date.now() });
     io.emit('presence-update', Array.from(onlineUsers.values()));
+  });
+
+  socket.on('register-profile', ({ username, uid }) => {
+    socket.data.username = username;
+    socket.data.uid = uid;
+    globalProfiles.set(username, { username, uid, socketId: socket.id });
   });
 
   socket.on('set-status', (status) => {
@@ -35,6 +42,50 @@ io.on('connection', (socket) => {
     }
   });
 
+  // --- UID SEARCH FOR FRIENDS ---
+  socket.on('search-uid', (query, callback) => {
+    let foundUser = null;
+    const cleanQuery = query.trim().toLowerCase();
+    
+    for (const [username, profile] of globalProfiles.entries()) {
+      if (profile.uid.toLowerCase() === cleanQuery || profile.username.toLowerCase() === cleanQuery) {
+        foundUser = { username: profile.username, uid: profile.uid };
+        break;
+      }
+    }
+
+    if (foundUser) {
+      callback({ found: true, user: foundUser });
+    } else {
+      callback({ found: false });
+    }
+  });
+
+  // --- DIRECT MESSAGING & EDIT/DELETE ---
+  socket.on('send-dm', ({ recipient, message }) => {
+    const recipientProfile = globalProfiles.get(recipient);
+    if (recipientProfile) {
+      io.to(recipientProfile.socketId).emit('direct-message', message);
+    }
+  });
+
+  socket.on('edit-dm', ({ recipient, messageId, newText }) => {
+    const recipientProfile = globalProfiles.get(recipient);
+    const senderUsername = socket.data.username;
+    if (recipientProfile && senderUsername) {
+      io.to(recipientProfile.socketId).emit('message-edited', { sender: senderUsername, messageId, newText });
+    }
+  });
+
+  socket.on('delete-dm', ({ recipient, messageId }) => {
+    const recipientProfile = globalProfiles.get(recipient);
+    const senderUsername = socket.data.username;
+    if (recipientProfile && senderUsername) {
+      io.to(recipientProfile.socketId).emit('message-deleted', { sender: senderUsername, messageId });
+    }
+  });
+
+  // --- VOICE CHAT SIGNALING ---
   socket.on('join-vc', (roomCode, userName) => {
     socket.join(roomCode);
     socket.to(roomCode).emit('user-joined', socket.id, userName);
@@ -50,6 +101,9 @@ io.on('connection', (socket) => {
 
   socket.on('disconnect', () => {
     onlineUsers.delete(socket.id);
+    if (socket.data.username) {
+      globalProfiles.delete(socket.data.username);
+    }
     io.emit('presence-update', Array.from(onlineUsers.values()));
     console.log('A user disconnected:', socket.id);
   });
