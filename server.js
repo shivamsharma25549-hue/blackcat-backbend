@@ -52,29 +52,29 @@ const directMessagesObj = db.messages || {};
 io.on('connection', (socket) => {
   console.log('A user connected:', socket.id);
 
-  socket.on('online', (username) => {
-    const cleanName = typeof username === 'string' ? username : username?.username;
-    if (cleanName) {
-      socket.data.username = cleanName;
-      onlineUsers.set(socket.id, { username: cleanName, status: 'Online In Launcher', online: true, lastSeen: Date.now() });
-      if (!globalProfiles.has(cleanName)) {
-        globalProfiles.set(cleanName, { username: cleanName, uid: socket.data.uid || 'BC-0000', socketId: socket.id });
-        saveDb();
-      } else {
-        const p = globalProfiles.get(cleanName);
-        p.socketId = socket.id;
-      }
-      io.emit('presence-update', Array.from(onlineUsers.values()));
-    }
-  });
-
-  socket.on('register-profile', ({ username, uid }) => {
-    if (username && uid) {
+  socket.on('register-operator', ({ username, uid, status }) => {
+    if (username) {
       console.log(`[REGISTER] Username: "${username}" | UID: "${uid}" | Socket: ${socket.id}`);
       socket.data.username = username;
-      socket.data.uid = uid;
-      globalProfiles.set(username, { username, uid, socketId: socket.id });
-      saveDb();
+      socket.data.uid = uid || 'BC-0000';
+      
+      onlineUsers.set(socket.id, {
+        username,
+        status: status || 'Online In Launcher',
+        online: true,
+        last_seen: Date.now()
+      });
+
+      if (!globalProfiles.has(username)) {
+        globalProfiles.set(username, { username, uid: uid || 'BC-0000', socketId: socket.id });
+        saveDb();
+      } else {
+        const p = globalProfiles.get(username);
+        p.socketId = socket.id;
+        p.uid = uid || p.uid;
+      }
+
+      io.emit('online-users-update', Array.from(onlineUsers.values()));
     }
   });
 
@@ -82,14 +82,14 @@ io.on('connection', (socket) => {
     const user = onlineUsers.get(socket.id);
     if (user) {
       user.status = status;
-      io.emit('presence-update', Array.from(onlineUsers.values()));
+      io.emit('online-users-update', Array.from(onlineUsers.values()));
     }
   });
 
-  // --- UID SEARCH FOR FRIENDS ---
-  socket.on('search-uid', (query, callback) => {
+  // --- UID / USERNAME SEARCH FOR FRIENDS ---
+  socket.on('search-user', (query, callback) => {
     if (!query || typeof query !== 'string') {
-      callback({ found: false });
+      if (typeof callback === 'function') callback({ found: false });
       return;
     }
 
@@ -112,34 +112,21 @@ io.on('connection', (socket) => {
       }
     }
 
-    if (foundUser) {
-      callback({ found: true, user: foundUser });
-    } else {
-      callback({ found: false });
+    if (typeof callback === 'function') {
+      if (foundUser) {
+        callback({ found: true, user: foundUser });
+      } else {
+        callback({ found: false });
+      }
     }
   });
 
   // --- DIRECT MESSAGING ---
-  socket.on('send-dm', ({ recipient, message }) => {
+  socket.on('send-dm', (data) => {
+    const { recipient, sender, text, id, time } = data;
     const recipientProfile = globalProfiles.get(recipient);
     if (recipientProfile && recipientProfile.socketId) {
-      io.to(recipientProfile.socketId).emit('direct-message', message);
-    }
-  });
-
-  socket.on('edit-dm', ({ recipient, messageId, newText }) => {
-    const recipientProfile = globalProfiles.get(recipient);
-    const senderUsername = socket.data.username;
-    if (recipientProfile && recipientProfile.socketId && senderUsername) {
-      io.to(recipientProfile.socketId).emit('message-edited', { sender: senderUsername, messageId, newText });
-    }
-  });
-
-  socket.on('delete-dm', ({ recipient, messageId }) => {
-    const recipientProfile = globalProfiles.get(recipient);
-    const senderUsername = socket.data.username;
-    if (recipientProfile && recipientProfile.socketId && senderUsername) {
-      io.to(recipientProfile.socketId).emit('message-deleted', { sender: senderUsername, messageId });
+      io.to(recipientProfile.socketId).emit('receive-dm', { sender, text, id, time });
     }
   });
 
@@ -159,7 +146,7 @@ io.on('connection', (socket) => {
 
   socket.on('disconnect', () => {
     onlineUsers.delete(socket.id);
-    io.emit('presence-update', Array.from(onlineUsers.values()));
+    io.emit('online-users-update', Array.from(onlineUsers.values()));
     console.log('A user disconnected:', socket.id);
   });
 });
