@@ -16,8 +16,37 @@ const io = new Server(server, {
   }
 });
 
+// --- PERSISTENT FILE DATABASE (SAVED LOCALLY IN DISK) ---
+const DB_FILE = path.join(__dirname, 'blackcat_db.json');
+
+function loadDb() {
+  try {
+    if (fs.existsSync(DB_FILE)) {
+      const raw = fs.readFileSync(DB_FILE, 'utf8');
+      return JSON.parse(raw);
+    }
+  } catch (err) {
+    console.error('Error loading DB:', err);
+  }
+  return { profiles: {}, messages: {} };
+}
+
+function saveDb() {
+  try {
+    const data = {
+      profiles: Object.fromEntries(globalProfiles.entries()),
+      messages: directMessagesObj
+    };
+    fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2));
+  } catch (err) {
+    console.error('Error saving DB:', err);
+  }
+}
+
+const db = loadDb();
 const onlineUsers = new Map();
-const globalProfiles = new Map(); // Stores username -> { username, uid, socketId }
+const globalProfiles = new Map(Object.entries(db.profiles || {}));
+const directMessagesObj = db.messages || {};
 
 // --- SOCKET.IO FOR LIVE PRESENCE, UID SEARCH, DMS & VOICE CHAT ---
 io.on('connection', (socket) => {
@@ -30,6 +59,7 @@ io.on('connection', (socket) => {
       onlineUsers.set(socket.id, { username: cleanName, status: 'Online In Launcher', online: true, lastSeen: Date.now() });
       if (!globalProfiles.has(cleanName)) {
         globalProfiles.set(cleanName, { username: cleanName, uid: socket.data.uid || 'BC-0000', socketId: socket.id });
+        saveDb();
       } else {
         const p = globalProfiles.get(cleanName);
         p.socketId = socket.id;
@@ -44,6 +74,7 @@ io.on('connection', (socket) => {
       socket.data.username = username;
       socket.data.uid = uid;
       globalProfiles.set(username, { username, uid, socketId: socket.id });
+      saveDb();
     }
   });
 
@@ -55,12 +86,8 @@ io.on('connection', (socket) => {
     }
   });
 
-  // --- UID SEARCH FOR FRIENDS (ROBUST MULTI-MAP SEARCH) ---
+  // --- UID SEARCH FOR FRIENDS ---
   socket.on('search-uid', (query, callback) => {
-    console.log(`[SEARCH] Query received: "${query}"`);
-    console.log(`[SEARCH] Current globalProfiles:`, Array.from(globalProfiles.entries()));
-    console.log(`[SEARCH] Current onlineUsers:`, Array.from(onlineUsers.entries()));
-
     if (!query || typeof query !== 'string') {
       callback({ found: false });
       return;
@@ -69,7 +96,6 @@ io.on('connection', (socket) => {
     let foundUser = null;
     const cleanQuery = query.trim().toLowerCase();
     
-    // 1. Check globalProfiles
     for (const [username, profile] of globalProfiles.entries()) {
       if ((profile.uid && profile.uid.toLowerCase() === cleanQuery) || profile.username.toLowerCase() === cleanQuery) {
         foundUser = { username: profile.username, uid: profile.uid || 'BC-0000' };
@@ -77,7 +103,6 @@ io.on('connection', (socket) => {
       }
     }
 
-    // 2. Fallback: Check onlineUsers map
     if (!foundUser) {
       for (const [sId, userObj] of onlineUsers.entries()) {
         if (userObj.username.toLowerCase() === cleanQuery) {
@@ -88,18 +113,16 @@ io.on('connection', (socket) => {
     }
 
     if (foundUser) {
-      console.log(`[SEARCH] Success! Found user:`, foundUser);
       callback({ found: true, user: foundUser });
     } else {
-      console.log(`[SEARCH] User not found for query: "${cleanQuery}"`);
       callback({ found: false });
     }
   });
 
-  // --- DIRECT MESSAGING & EDIT/DELETE ---
+  // --- DIRECT MESSAGING ---
   socket.on('send-dm', ({ recipient, message }) => {
     const recipientProfile = globalProfiles.get(recipient);
-    if (recipientProfile) {
+    if (recipientProfile && recipientProfile.socketId) {
       io.to(recipientProfile.socketId).emit('direct-message', message);
     }
   });
@@ -107,7 +130,7 @@ io.on('connection', (socket) => {
   socket.on('edit-dm', ({ recipient, messageId, newText }) => {
     const recipientProfile = globalProfiles.get(recipient);
     const senderUsername = socket.data.username;
-    if (recipientProfile && senderUsername) {
+    if (recipientProfile && recipientProfile.socketId && senderUsername) {
       io.to(recipientProfile.socketId).emit('message-edited', { sender: senderUsername, messageId, newText });
     }
   });
@@ -115,7 +138,7 @@ io.on('connection', (socket) => {
   socket.on('delete-dm', ({ recipient, messageId }) => {
     const recipientProfile = globalProfiles.get(recipient);
     const senderUsername = socket.data.username;
-    if (recipientProfile && senderUsername) {
+    if (recipientProfile && recipientProfile.socketId && senderUsername) {
       io.to(recipientProfile.socketId).emit('message-deleted', { sender: senderUsername, messageId });
     }
   });
