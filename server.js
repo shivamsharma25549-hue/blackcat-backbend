@@ -18,6 +18,13 @@ const io = new Server(server, {
   }
 });
 
+// --- STATIC SKIN HOSTING FOR CUSTOMSKINLOADER ---
+const skinsDir = path.join(__dirname, 'minecraft_data', 'skins');
+if (!fs.existsSync(skinsDir)) {
+  fs.mkdirSync(skinsDir, { recursive: true });
+}
+app.use('/skins', express.static(skinsDir));
+
 // --- PERSISTENT FILE DATABASE (SAVED LOCALLY IN DISK) ---
 const DB_FILE = path.join(__dirname, 'blackcat_db.json');
 
@@ -169,15 +176,11 @@ app.post('/api/upload-skin', (req, res) => {
     if (!username || !skinData) {
       return res.status(400).json({ success: false, error: 'Missing username or skin data' });
     }
-    const skinsDir = path.join(__dirname, 'minecraft_data', 'skins');
-    if (!fs.existsSync(skinsDir)) {
-      fs.mkdirSync(skinsDir, { recursive: true });
-    }
     const safeUsername = path.basename(username).replace(/[^a-zA-Z0-9_-]/g, '');
     const base64Data = skinData.replace(/^data:image\/png;base64,/, '');
     const filePath = path.join(skinsDir, `${safeUsername}.png`);
     fs.writeFileSync(filePath, base64Data, 'base64');
-    res.json({ success: true, path: filePath });
+    res.json({ success: true, path: filePath, skinUrl: `https://${req.get('host')}/skins/${safeUsername}.png` });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
