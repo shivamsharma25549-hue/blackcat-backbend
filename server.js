@@ -29,6 +29,7 @@ io.on('connection', (socket) => {
   });
 
   socket.on('register-profile', ({ username, uid }) => {
+    console.log(`[REGISTER] Username: "${username}" | UID: "${uid}" | Socket: ${socket.id}`);
     socket.data.username = username;
     socket.data.uid = uid;
     globalProfiles.set(username, { username, uid, socketId: socket.id });
@@ -42,12 +43,16 @@ io.on('connection', (socket) => {
     }
   });
 
-  // --- UID SEARCH FOR FRIENDS ---
+  // --- UID SEARCH FOR FRIENDS WITH LOGGING ---
   socket.on('search-uid', (query, callback) => {
+    console.log(`[SEARCH] Query received: "${query}"`);
+    console.log(`[SEARCH] Current profiles in memory:`, Array.from(globalProfiles.entries()));
+
     if (!query || typeof query !== 'string') {
       callback({ found: false });
       return;
     }
+
     let foundUser = null;
     const cleanQuery = query.trim().toLowerCase();
     
@@ -59,8 +64,10 @@ io.on('connection', (socket) => {
     }
 
     if (foundUser) {
+      console.log(`[SEARCH] Success! Found user:`, foundUser);
       callback({ found: true, user: foundUser });
     } else {
+      console.log(`[SEARCH] User not found for query: "${cleanQuery}"`);
       callback({ found: false });
     }
   });
@@ -105,7 +112,6 @@ io.on('connection', (socket) => {
 
   socket.on('disconnect', () => {
     onlineUsers.delete(socket.id);
-    // Removed globalProfiles.delete so UIDs remain persistently searchable even across reconnects
     io.emit('presence-update', Array.from(onlineUsers.values()));
     console.log('A user disconnected:', socket.id);
   });
