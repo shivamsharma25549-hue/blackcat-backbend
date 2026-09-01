@@ -44,6 +44,10 @@ io.on('connection', (socket) => {
 
   // --- UID SEARCH FOR FRIENDS ---
   socket.on('search-uid', (query, callback) => {
+    if (!query || typeof query !== 'string') {
+      callback({ found: false });
+      return;
+    }
     let foundUser = null;
     const cleanQuery = query.trim().toLowerCase();
     
@@ -101,9 +105,7 @@ io.on('connection', (socket) => {
 
   socket.on('disconnect', () => {
     onlineUsers.delete(socket.id);
-    if (socket.data.username) {
-      globalProfiles.delete(socket.data.username);
-    }
+    // Removed globalProfiles.delete so UIDs remain persistently searchable even across reconnects
     io.emit('presence-update', Array.from(onlineUsers.values()));
     console.log('A user disconnected:', socket.id);
   });
