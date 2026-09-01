@@ -4,9 +4,11 @@ const { Server } = require('socket.io');
 const fs = require('fs');
 const path = require('path');
 const https = require('https');
+const httpModule = require('http');
 
 const app = express();
-app.use(express.json());
+// Expanded JSON payload limit to handle base64 Minecraft skin image uploads
+app.use(express.json({ limit: '10mb' }));
 
 const server = http.createServer(app);
 const io = new Server(server, {
@@ -19,17 +21,23 @@ const io = new Server(server, {
 // --- PERSISTENT FILE DATABASE (SAVED LOCALLY IN DISK) ---
 const DB_FILE = path.join(__dirname, 'blackcat_db.json');
 
+let globalProfiles = new Map();
+let directMessagesObj = {};
+
 function loadDb() {
   try {
     if (fs.existsSync(DB_FILE)) {
       const raw = fs.readFileSync(DB_FILE, 'utf8');
-      return JSON.parse(raw);
+      const parsed = JSON.parse(raw);
+      globalProfiles = new Map(Object.entries(parsed.profiles || {}));
+      directMessagesObj = parsed.messages || {};
     }
   } catch (err) {
     console.error('Error loading DB:', err);
   }
-  return { profiles: {}, messages: {} };
 }
+
+loadDb();
 
 function saveDb() {
   try {
@@ -43,10 +51,7 @@ function saveDb() {
   }
 }
 
-const db = loadDb();
 const onlineUsers = new Map();
-const globalProfiles = new Map(Object.entries(db.profiles || {}));
-const directMessagesObj = db.messages || {};
 
 // --- SOCKET.IO FOR LIVE PRESENCE, UID SEARCH, DMS & VOICE CHAT ---
 io.on('connection', (socket) => {
@@ -67,12 +72,12 @@ io.on('connection', (socket) => {
 
       if (!globalProfiles.has(username)) {
         globalProfiles.set(username, { username, uid: uid || 'BC-0000', socketId: socket.id });
-        saveDb();
       } else {
         const p = globalProfiles.get(username);
         p.socketId = socket.id;
         p.uid = uid || p.uid;
       }
+      saveDb();
 
       io.emit('online-users-update', Array.from(onlineUsers.values()));
     }
@@ -124,6 +129,12 @@ io.on('connection', (socket) => {
   // --- DIRECT MESSAGING ---
   socket.on('send-dm', (data) => {
     const { recipient, sender, text, id, time } = data;
+    if (!recipient || !sender || !text) return;
+
+    if (!directMessagesObj[recipient]) directMessagesObj[recipient] = [];
+    directMessagesObj[recipient].push({ id, sender, text, time, edited: false });
+    saveDb();
+
     const recipientProfile = globalProfiles.get(recipient);
     if (recipientProfile && recipientProfile.socketId) {
       io.to(recipientProfile.socketId).emit('receive-dm', { sender, text, id, time });
@@ -151,24 +162,59 @@ io.on('connection', (socket) => {
   });
 });
 
+// --- API ENDPOINT: SKIN UPLOAD ---
+app.post('/api/upload-skin', (req, res) => {
+  try {
+    const { username, skinData } = req.body;
+    if (!username || !skinData) {
+      return res.status(400).json({ success: false, error: 'Missing username or skin data' });
+    }
+    const skinsDir = path.join(__dirname, 'minecraft_data', 'skins');
+    if (!fs.existsSync(skinsDir)) {
+      fs.mkdirSync(skinsDir, { recursive: true });
+    }
+    const safeUsername = path.basename(username).replace(/[^a-zA-Z0-9_-]/g, '');
+    const base64Data = skinData.replace(/^data:image\/png;base64,/, '');
+    const filePath = path.join(skinsDir, `${safeUsername}.png`);
+    fs.writeFileSync(filePath, base64Data, 'base64');
+    res.json({ success: true, path: filePath });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // --- API ENDPOINT: MOD INSTALLATION ---
 app.post('/api/install-mod', (req, res) => {
   try {
     const { downloadUrl, fileName } = req.body;
+    if (!downloadUrl || !fileName) {
+      return res.status(400).json({ success: false, error: 'Missing downloadUrl or fileName' });
+    }
     const modsDir = path.join(__dirname, 'minecraft_data', 'mods');
     if (!fs.existsSync(modsDir)) {
       fs.mkdirSync(modsDir, { recursive: true });
     }
-    const filePath = path.join(modsDir, fileName);
+    const safeFileName = path.basename(fileName);
+    const filePath = path.join(modsDir, safeFileName);
     const fileStream = fs.createWriteStream(filePath);
     
-    https.get(downloadUrl, (response) => {
+    const client = downloadUrl.startsWith('https') ? https : httpModule;
+
+    client.get(downloadUrl, (response) => {
+      if (response.statusCode !== 200) {
+        fileStream.close();
+        fs.unlink(filePath, () => {});
+        return res.status(500).json({ success: false, error: `Failed to download file, status code: ${response.statusCode}` });
+      }
+
       response.pipe(fileStream);
       fileStream.on('finish', () => {
         fileStream.close();
         res.json({ success: true });
       });
     }).on('error', (err) => {
+      fileStream.close();
+      fs.unlink(filePath, () => {});
       res.status(500).json({ success: false, error: err.message });
     });
   } catch (err) {
