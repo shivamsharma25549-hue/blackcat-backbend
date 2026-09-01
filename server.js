@@ -24,15 +24,27 @@ io.on('connection', (socket) => {
   console.log('A user connected:', socket.id);
 
   socket.on('online', (username) => {
-    onlineUsers.set(socket.id, { username, status: 'Online In Launcher', online: true, lastSeen: Date.now() });
-    io.emit('presence-update', Array.from(onlineUsers.values()));
+    const cleanName = typeof username === 'string' ? username : username?.username;
+    if (cleanName) {
+      socket.data.username = cleanName;
+      onlineUsers.set(socket.id, { username: cleanName, status: 'Online In Launcher', online: true, lastSeen: Date.now() });
+      if (!globalProfiles.has(cleanName)) {
+        globalProfiles.set(cleanName, { username: cleanName, uid: socket.data.uid || 'BC-0000', socketId: socket.id });
+      } else {
+        const p = globalProfiles.get(cleanName);
+        p.socketId = socket.id;
+      }
+      io.emit('presence-update', Array.from(onlineUsers.values()));
+    }
   });
 
   socket.on('register-profile', ({ username, uid }) => {
-    console.log(`[REGISTER] Username: "${username}" | UID: "${uid}" | Socket: ${socket.id}`);
-    socket.data.username = username;
-    socket.data.uid = uid;
-    globalProfiles.set(username, { username, uid, socketId: socket.id });
+    if (username && uid) {
+      console.log(`[REGISTER] Username: "${username}" | UID: "${uid}" | Socket: ${socket.id}`);
+      socket.data.username = username;
+      socket.data.uid = uid;
+      globalProfiles.set(username, { username, uid, socketId: socket.id });
+    }
   });
 
   socket.on('set-status', (status) => {
@@ -43,10 +55,11 @@ io.on('connection', (socket) => {
     }
   });
 
-  // --- UID SEARCH FOR FRIENDS WITH LOGGING ---
+  // --- UID SEARCH FOR FRIENDS (ROBUST MULTI-MAP SEARCH) ---
   socket.on('search-uid', (query, callback) => {
     console.log(`[SEARCH] Query received: "${query}"`);
-    console.log(`[SEARCH] Current profiles in memory:`, Array.from(globalProfiles.entries()));
+    console.log(`[SEARCH] Current globalProfiles:`, Array.from(globalProfiles.entries()));
+    console.log(`[SEARCH] Current onlineUsers:`, Array.from(onlineUsers.entries()));
 
     if (!query || typeof query !== 'string') {
       callback({ found: false });
@@ -56,10 +69,21 @@ io.on('connection', (socket) => {
     let foundUser = null;
     const cleanQuery = query.trim().toLowerCase();
     
+    // 1. Check globalProfiles
     for (const [username, profile] of globalProfiles.entries()) {
-      if (profile.uid.toLowerCase() === cleanQuery || profile.username.toLowerCase() === cleanQuery) {
-        foundUser = { username: profile.username, uid: profile.uid };
+      if ((profile.uid && profile.uid.toLowerCase() === cleanQuery) || profile.username.toLowerCase() === cleanQuery) {
+        foundUser = { username: profile.username, uid: profile.uid || 'BC-0000' };
         break;
+      }
+    }
+
+    // 2. Fallback: Check onlineUsers map
+    if (!foundUser) {
+      for (const [sId, userObj] of onlineUsers.entries()) {
+        if (userObj.username.toLowerCase() === cleanQuery) {
+          foundUser = { username: userObj.username, uid: 'BC-0000' };
+          break;
+        }
       }
     }
 
